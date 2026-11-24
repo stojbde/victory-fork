@@ -149,9 +149,12 @@ pub(crate) fn mode() -> u8 {
 type Ranges = HashMap<(usize, usize), (u64, u64, u64, u32)>;
 static RANGES: Mutex<Option<Ranges>> = Mutex::new(None);
 
+/// Per range (start, length): two counts.
+type RangeCounts = HashMap<(usize, usize), (u64, u64)>;
+
 /// Per range copied whole because its memory is not watched (start,
 /// length): copies and microseconds.
-static WHOLE: Mutex<Option<HashMap<(usize, usize), (u64, u64)>>> = Mutex::new(None);
+static WHOLE: Mutex<Option<RangeCounts>> = Mutex::new(None);
 
 /// `len` bytes at `src`, memory that is not watched, were copied whole in
 /// `us`.
@@ -174,7 +177,10 @@ static WAITS_BY_WORK: Mutex<Option<HashMap<String, (u64, u64)>>> = Mutex::new(No
 /// With `VICTORY_GPU_TIMING`: the commands' time on the card since the last
 /// line by what they ran (a pipeline, or the kind of command): how many,
 /// their microseconds, and the longest one's.
-static COMMANDS_BY_WORK: Mutex<Option<HashMap<String, (u64, u64, u64)>>> = Mutex::new(None);
+static COMMANDS_BY_WORK: Mutex<Option<HashMap<String, CommandTimes>>> = Mutex::new(None);
+
+/// How many, microseconds, the longest one's.
+type CommandTimes = (u64, u64, u64);
 
 /// A command took `ms` on the card (timing run). `op` is its note: the
 /// kind and size first, then the pipeline in brackets, then what it binds.
@@ -244,7 +250,7 @@ pub(crate) fn barrier_test() -> u8 {
 
 /// Per range compared after a submission (start, length): times, and the
 /// bytes of it written back to the title.
-static COMPARED: Mutex<Option<HashMap<(usize, usize), (u64, u64)>>> = Mutex::new(None);
+static COMPARED: Mutex<Option<RangeCounts>> = Mutex::new(None);
 
 /// `len` bytes at `src` were compared after a submission and `written` of
 /// them put back into title memory.
