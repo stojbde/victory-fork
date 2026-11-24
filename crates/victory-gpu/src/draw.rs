@@ -279,7 +279,7 @@ fn mesh_kept(pipeline: usize) -> bool {
     let Some(at) = p.name.find("mesh ") else {
         return true;
     };
-    let hash = p.name[at + 5..].as_bytes();
+    let hash = &p.name.as_bytes()[at + 5..];
     if hash.len() < 16 {
         return true;
     }
@@ -2607,6 +2607,10 @@ fn readable(list: &HostList, kind: ResourceType, view: &View) {
                 }
             }
         }
+        #[allow(
+            clippy::collapsible_match,
+            reason = "diagnostics builds note every target first"
+        )]
         (View::Unordered(resource, _, _), ResourceType::Uav) => {
             #[cfg(feature = "diagnostics")]
             crate::capture::note_target(*resource as This);
