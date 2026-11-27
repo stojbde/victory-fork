@@ -37,6 +37,36 @@ thread_local! {
     /// and their directory.)
     pub(in crate::emit) static TEST_MEMORY: std::cell::Cell<Option<(u32, u64)>> =
         const { std::cell::Cell::new(None) };
+    /// The tests' way to translate as with `VICTORY_BVH_NO_HIT=1`
+    /// ([`no_hit`]).
+    pub(in crate::emit) static TEST_NO_HIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether a node test answers "no hit" and reads nothing
+/// (on by default, `VICTORY_BVH_NO_HIT=0` turns it off; never with
+/// `VICTORY_BVH_BUILDER=1`, which has the structures built).
+///
+/// The title's structure builder does not run in the layer unless asked
+/// for, and the title's ray-traced passes run all the same: each node test
+/// then reads whatever bytes lie where a structure would be, in a walk the
+/// title bounds at 65,535 steps a wave. What comes back is not the scene:
+/// it differs from launch to launch, and how long a pass runs depends on
+/// those bytes. With the switch a box node enters no child and any other
+/// node is missed, as in a scene with nothing in it: every ray leaves at
+/// its first test, shadow rays find no occluder, and the answer is the same
+/// in every run. (The idea is fork pull request #994's, which asks a host
+/// word at run time; here it is a translation, since the builder's state
+/// does not change during a run of ours.)
+fn no_hit() -> bool {
+    // Tests ask for it themselves; the default below is for runs.
+    if cfg!(test) {
+        #[cfg(test)]
+        return TEST_NO_HIT.get();
+    }
+    // Only while the builder is off (`VICTORY_BVH_BUILDER=0`; it runs by
+    // default), and not with `VICTORY_BVH_NO_HIT=0`.
+    std::env::var_os("VICTORY_BVH_NO_HIT").is_none_or(|v| v != "0")
+        && std::env::var_os("VICTORY_BVH_BUILDER").is_some_and(|v| v == "0")
 }
 
 /// Where the instruction's node is.
@@ -134,6 +164,22 @@ impl<'a> Lower<'a> {
             inverse: [f[7], f[8], f[9]],
         };
         let c = self.cur;
+        if no_hit() {
+            // No structures: a box enters no child, anything else is
+            // missed ([`no_hit`]). Nothing is read, and nothing asked of
+            // the directory of title memory.
+            let _ = &ray;
+            let (k4, k6) = (self.s.m.i32(4), self.s.m.i32(6));
+            let pair = self.s.m.bin(c, Bin::And, pointer, k6);
+            let is_box = self.s.m.cmp(c, pred::EQ, pair, k4);
+            let none = self.s.m.i32(bvh::NONE);
+            for (k, miss) in bvh::MISS.into_iter().enumerate() {
+                let miss = self.s.m.i32(miss.to_bits());
+                let r = self.s.m.select(c, is_box, none, miss);
+                self.write(inst, Reg::V(dst + k as u8), r, guard);
+            }
+            return Ok(());
+        }
         let at = match nodes {
             BvhNodes::Resource => {
                 let src = self
@@ -197,9 +243,13 @@ impl<'a> Lower<'a> {
         let triangle_end = self.cur;
         self.s.m.terminate(triangle_end, Term::Br(join));
         self.cur = join;
-        // Kinds 6 and 7 (an instance, a procedural primitive): not known
-        // what the console returns; the title's programs do not read it.
-        let other = bvh::MISS.map(|f| self.s.m.i32(f.to_bits()));
+        // Kinds 6 and 7 (an instance, a procedural primitive): the hardware
+        // returns 0xFFFFFFFF in all four dwords (AMD GPURT
+        // IntersectCommon.hlsl: "User defined node. HW returns -1"); a
+        // traversal tells such a node by that answer and handles it itself
+        // (an instance: the ray goes into the object's structure). This
+        // returned a miss before (rt-format audit).
+        let other = [u32::MAX; 4].map(|v| self.s.m.i32(v));
         let i32t = self.s.t.i32;
         let mut results = Vec::with_capacity(4);
         for k in 0..4 {
@@ -244,7 +294,7 @@ impl<'a> Lower<'a> {
             let at = self.s.m.select(c, inside, at, outside);
             return (handle, at);
         }
-        self.memory(low, high, guard)
+        self.memory(low, high, guard, false)
     }
 
     /// `count` dwords of the node from its byte `base` + `offset` (`base`

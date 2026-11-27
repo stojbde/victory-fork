@@ -16,30 +16,61 @@
 //! `present` (swap chain).
 
 #[cfg(all(windows, feature = "diagnostics"))]
+mod backreads;
+#[cfg(all(windows, feature = "diagnostics"))]
 mod capture;
+#[cfg(windows)]
+mod cardmeter;
+#[cfg(all(windows, feature = "diagnostics"))]
+mod renderdoc;
+#[cfg(all(windows, feature = "diagnostics"))]
+mod shot;
 pub mod console;
 #[cfg(all(windows, feature = "diagnostics"))]
 mod copystat;
 pub mod descriptor;
 pub mod device;
 #[cfg(windows)]
+mod drvwatch;
+#[cfg(windows)]
+mod fpsbox;
+#[cfg(windows)]
+mod stats;
+#[cfg(windows)]
+mod spread;
+#[cfg(windows)]
 mod draw;
 pub mod dxgi;
 pub mod fence;
 pub mod frame;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod heap_pass;
+#[cfg(windows)]
+pub mod framelog;
+#[cfg(windows)]
+mod gpudetile;
+#[cfg(windows)]
+mod heap_worker;
 #[cfg(windows)]
 mod host;
 #[cfg(windows)]
 mod indirect;
 #[cfg(windows)]
 mod inplace;
+mod launch;
 pub mod list;
 pub mod object;
 pub mod pipeline;
 #[cfg(windows)]
+mod plaincopy;
+#[cfg(windows)]
 mod primitive;
+#[cfg(all(windows, feature = "diagnostics"))]
+mod profile;
 pub mod query;
 pub mod queue;
+#[cfg(windows)]
+mod queue2;
 pub mod resource;
 pub mod root;
 #[cfg(windows)]
@@ -50,11 +81,15 @@ pub mod shader_cache;
 mod memory;
 #[cfg(windows)]
 mod shadow;
+#[cfg(windows)]
+mod tiles;
 pub mod signature;
 #[cfg(windows)]
 mod texture;
 #[cfg(windows)]
 mod watch;
+#[cfg(windows)]
+mod texback;
 
 #[cfg(windows)]
 pub use host::on_failure;
@@ -62,5 +97,6 @@ pub use host::on_failure;
 pub use inplace::{title_memory_freeing, title_memory_section, title_memory_view};
 #[cfg(windows)]
 pub use watch::{
-    title_memory_reading, title_memory_remapped, title_memory_remapping, writing as kernel_will_write,
+    title_memory_committed, title_memory_reading, title_memory_remapped, title_memory_remapping, title_memory_written,
+    writing as kernel_will_write,
 };

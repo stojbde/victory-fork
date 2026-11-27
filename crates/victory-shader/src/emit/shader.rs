@@ -12,6 +12,26 @@ pub const SAMPLER_SPACE: u32 = 0;
 /// Where root CBVs and SRVs are bound: `b<root parameter index>` and
 /// `t<root parameter index>` in this space.
 pub const ROOT_CBV_SPACE: u32 = 1;
+/// The bytes of payload every translated mesh shader declares and never
+/// reads: 4 unless `VICTORY_MESH_LAUNCH=0` (none then, as before). With
+/// it the host puts an amplification shader of its own in front of the
+/// mesh shader (the launch of an indirect mesh record, `victory-gpu`'s
+/// `launch`), whose payload must have the size the mesh shader declares: a
+/// mesh shader that declares none is refused with one (the RTX 5080's
+/// driver returns `E_INVALIDARG`), and one that declares a payload is still
+/// taken without an amplification shader. Read here too so that the switch
+/// is part of the shader cache's key.
+pub fn mesh_payload_bytes() -> u32 {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ON.get_or_init(|| std::env::var_os("VICTORY_MESH_LAUNCH").is_none_or(|v| v != "0")) {
+        4
+    } else {
+        0
+    }
+}
+/// The register space the host's amplification shader binds in (`b0`,
+/// `t0`, `u0`): no translated shader binds there.
+pub const LAUNCH_SPACE: u32 = 9;
 
 /// The root SRV `t<SLOT_STRIDES>` in [`ROOT_CBV_SPACE`] of a shader that
 /// reads buffers through descriptors it picks from the view heap at an
@@ -43,7 +63,11 @@ pub const SLOT_STRIDES_COUNT: u32 = 1 << 21;
 ///   reads zeros and drops writes;
 /// - the root UAV `u<SLOT_FAULTS>` takes the page numbers of accesses that
 ///   found no copy ([`MEMORY_FAULTS`] dwords, dword 0 a sink), which the
-///   host reads afterwards to make those copies for the frames to come.
+///   host reads afterwards to make those copies for the frames to come;
+///   after them, [`MEMORY_PAGES`] dwords, one per page: a store or atomic
+///   through an address sets its page's dword to 1 (the host reads and
+///   clears them, and copies back only pages shaders wrote). The buffer is
+///   [`MEMORY_NOTES`] dwords in all.
 pub const SLOT_MEMORY: u8 = 254;
 /// See [`SLOT_MEMORY`].
 pub const SLOT_FAULTS: u8 = 253;
@@ -51,6 +75,9 @@ pub const SLOT_FAULTS: u8 = 253;
 pub const MEMORY_PAGES: u32 = 1 << 21;
 /// Dwords of the [`SLOT_FAULTS`] buffer.
 pub const MEMORY_FAULTS: u32 = 4096;
+/// Dwords of the [`SLOT_FAULTS`] buffer in all: the fault notes, then one
+/// written flag per directory page (dword [`MEMORY_FAULTS`] + page).
+pub const MEMORY_NOTES: u32 = MEMORY_FAULTS + MEMORY_PAGES;
 /// `RootType::Other` code of a user-data dword the host computes: the view
 /// heap slot of the memory copies' views ([`SLOT_MEMORY`]).
 pub const USER_MEMORY_BASE: u32 = 0x100;
@@ -69,10 +96,30 @@ pub const USER_VIEW_ADDRESS: u32 = 0x101;
 /// view. Asked for every root UAV, and for the root SRVs of programs with
 /// a spilled user-data table.
 pub const USER_VIEW_BIAS: u32 = 0x103;
+/// `RootType::Other` code of a user-data dword the host computes, for a
+/// compute program that reads its group id x: dword 0 the groups per row of
+/// a dispatch spread across z (0: not spread), dword 1 the x group count
+/// the title asked for. A dispatch of more than 65,535 groups in x (the
+/// most Direct3D 12 runs) runs as `(row, y, rows)`; the program takes group
+/// `(x + z * row, y, 0)` and leaves at once past the asked count. (After
+/// upstream VIctory pull request #2312, Xvania7; run 319 measured indirect
+/// compute records asking 115,200 groups, clamped to 65,535 before.)
+pub const USER_DISPATCH_SPREAD: u32 = 0x104;
+/// `RootType::Other` code of a user-data dword the host computes, for a
+/// compute program with a spilled user-data table (the ray-tracing
+/// structure builder's stages): dword `n` the thread count along axis `n`
+/// of a `DispatchX` with `USE_THREAD_DIMENSIONS` (flags bit 5, 0x20) when
+/// it is not a whole number of groups, else 0 (every thread runs). The
+/// threads at or past the count do nothing, as the console leaves them out
+/// of EXEC. (After fork pull request #646, mynzjerko, which numbers it
+/// 0x104; that is [`USER_DISPATCH_SPREAD`] here, and 0x105 is fork #994's
+/// `USER_THREAD_LIMIT`.)
+pub const USER_DISPATCH_THREADS: u32 = 0x106;
 
 /// `ShaderFlags` bits (metadata) and their `SFI0` feature bits.
 pub(crate) mod flags {
     pub const RAW_BUFFERS: u64 = 1 << 4;
+    pub const DOUBLES: u64 = 1 << 2;
     pub const STENCIL_REF: u64 = 1 << 11;
     pub const TYPED_UAV_LOADS: u64 = 1 << 13;
     pub const WAVE_OPS: u64 = 1 << 19;
@@ -112,16 +159,21 @@ pub(crate) struct Geometry {
     pub max_vertices: u32,
 }
 
-/// The null slot a host view heap keeps at its end when the title's heap did not fit in it
-/// (0: no limit). Shaders translated while it is set read that slot for any view index at or
-/// past it: a host that caps its heap (NVIDIA at 1 000 000 views; a retail game's heap is
-/// larger) hung its GPU on reads past the end (GPU-based validation: "descriptor heap index
-/// out of bounds"), which AMD's driver forgives.
+/// The null slot every host view heap keeps at its end (0: no limit). Shaders translated while
+/// it is set read that slot for any view index at or past it. A read past a heap's end is
+/// undefined: a host that caps its heap (NVIDIA at 1 000 000 views; a retail game's heap is
+/// larger) hung its GPU (GPU-based validation: "descriptor heap index out of bounds"), and AMD
+/// RDNA3 took a page fault and removed the device.
 static VIEW_LIMIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// See [`VIEW_LIMIT`]: `null_slot` is the last slot of the host's view heap, kept null.
 pub fn set_view_heap_limit(null_slot: u32) {
     VIEW_LIMIT.store(null_slot, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// See [`VIEW_LIMIT`]: the null slot shaders translated now clamp view indices to (0: none).
+pub fn view_heap_limit() -> u32 {
+    VIEW_LIMIT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 pub(crate) struct Shader {
@@ -151,6 +203,12 @@ pub(crate) struct Shader {
     pub flags: u64,
     /// Heap handles made with a non-uniform index.
     pub nonuniform_handles: u32,
+    /// Wide raw loads given a bounds check (`lower.rs`, `raw_dwords`).
+    #[cfg(test)]
+    pub guarded_wide_loads: u32,
+    /// Quad-local reads written through quad operations (`lower.rs`, `quad_read`).
+    #[cfg(test)]
+    pub quad_reads: u32,
     /// A compute shader with this thread-group size.
     pub threads: Option<[u32; 3]>,
     /// The wave size a compute shader requires (`WaveSize`).
@@ -207,6 +265,10 @@ impl Shader {
             root_uavs: Vec::new(),
             flags: 0,
             nonuniform_handles: 0,
+            #[cfg(test)]
+            guarded_wide_loads: 0,
+            #[cfg(test)]
+            quad_reads: 0,
             threads: None,
             wave_size: None,
             lds_dwords: 0,
@@ -713,7 +775,7 @@ impl Shader {
                         mesh.max_vertices,
                         mesh.max_primitives,
                         mesh.topology.into(),
-                        0,
+                        mesh_payload_bytes(),
                     ]
                     .map(|n| Some(i32c(&mut self, n)));
                     let mut node = vec![Some(t)];
@@ -772,6 +834,9 @@ impl Shader {
         dxil.extend(&bitcode);
 
         let mut features = 0u64;
+        if self.flags & flags::DOUBLES != 0 {
+            features |= 0x1;
+        }
         if self.flags & flags::STENCIL_REF != 0 {
             features |= 0x200;
         }

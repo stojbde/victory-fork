@@ -46,6 +46,138 @@ static EMULATED: AtomicU64 = AtomicU64::new(0);
 static ASKED: AtomicU64 = AtomicU64::new(0);
 static ZEROED: AtomicU64 = AtomicU64::new(0);
 
+/// Exceptions taken by kind since the last line: a lone `clzero`, the 12-byte loop, the
+/// 15-byte loop taken whole, `monitorx`, `mwaitx`, everything else; the 64-byte lines the
+/// 15-byte loops zeroed (each was an exception of its own before they were taken whole); and
+/// the lines zeroed by stores that fault into the runtime's handlers ([`zero_through_fault`]).
+static KINDS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+const K_CLZERO: usize = 0;
+const K_LOOP12: usize = 1;
+const K_LOOP15: usize = 2;
+const K_MONITORX: usize = 3;
+const K_MWAITX: usize = 4;
+const K_OTHER: usize = 5;
+const K_LOOP15_LINES: usize = 6;
+const K_THROUGH_FAULT: usize = 7;
+
+/// Waits the title made with `monitorx` / `mwaitx` (it waits for a fence that way, reading
+/// the fence's value in memory: its +0x4fb0ad0) that have ended since the last line: how
+/// many, their microseconds, and both again for those of 1 ms and more, 5 ms and more,
+/// 20 ms and more.
+static WAITS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+/// Waits said in the log one by one.
+static WAITS_SAID: AtomicU64 = AtomicU64::new(0);
+/// When the last line was written, in milliseconds of [`clock_us`].
+static LINE_AT: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    /// The address and the value this thread last armed a monitor for (`monitorx`: rax, and
+    /// the title's wanted value in rsi).
+    static MONITOR: Cell<(usize, u64)> = const { Cell::new((0, 0)) };
+    /// This thread's wait under way: when it began and when its last `mwaitx` was, in
+    /// microseconds, what it waits for, and its `mwaitx` count.
+    static WAIT: Cell<(u64, u64, usize, u64, u32)> = const { Cell::new((0, 0, 0, 0, 0)) };
+}
+
+/// Microseconds on the performance counter.
+fn clock_us() -> u64 {
+    static PER_SECOND: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    let per_second = *PER_SECOND.get_or_init(|| {
+        let mut f = 0i64;
+        // SAFETY: a valid out pointer.
+        unsafe { windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut f) };
+        f.max(1)
+    });
+    let mut now = 0i64;
+    // SAFETY: a valid out pointer.
+    unsafe { windows_sys::Win32::System::Performance::QueryPerformanceCounter(&mut now) };
+    (now as u128 * 1_000_000 / per_second as u128) as u64
+}
+
+/// Whether events are said one by one now: four seconds of every two minutes of the wall
+/// clock, the same seconds in which the fence meter of the graphics side says its own
+/// (`victory_gpu::fence::pace`), so that the two can be laid side by side.
+fn detail_now() -> bool {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).is_ok_and(|d| d.as_secs() % 120 < 4)
+}
+
+/// Whether the 15-byte `clzero` loop is taken whole (`VICTORY_CLZERO_LOOP15=0`: line by
+/// line, as before).
+fn loop15() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_CLZERO_LOOP15").is_none_or(|v| v != "0"))
+}
+
+/// A wait of this thread has ended: counted, and said if it is one to say.
+fn wait_ended(begin: u64, last: u64, address: usize, wanted: u64, spins: u32) {
+    let us = last.saturating_sub(begin);
+    for (i, least) in [0u64, 1_000, 5_000, 20_000].into_iter().enumerate() {
+        if us >= least {
+            WAITS[2 * i].fetch_add(1, Relaxed);
+            WAITS[2 * i + 1].fetch_add(us, Relaxed);
+        }
+    }
+    if us >= 500 && (detail_now() || WAITS_SAID.fetch_add(1, Relaxed) < 40) {
+        // SAFETY: no preconditions.
+        let thread = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
+        tracing::info!(
+            "mwait: thread {thread} waited {:.1} ms for the value at {address:#x} to reach {wanted} ({spins} mwaitx)",
+            us as f64 / 1e3
+        );
+    }
+}
+
+/// A `mwaitx` of this thread: part of the wait under way, or the first of a new one.
+fn wait_step() {
+    let now = clock_us();
+    let (address, wanted) = MONITOR.with(Cell::get);
+    let (begin, last, was_at, was_for, spins) = WAIT.with(Cell::get);
+    if begin != 0 && was_at == address && was_for == wanted && now.saturating_sub(last) < 2_000 {
+        WAIT.with(|w| w.set((begin, now, address, wanted, spins + 1)));
+        return;
+    }
+    if begin != 0 {
+        wait_ended(begin, last, was_at, was_for, spins);
+    }
+    WAIT.with(|w| w.set((now, now, address, wanted, 1)));
+}
+
+/// A line every five seconds: exceptions a second by kind, and the waits that ended.
+fn line() {
+    let now = clock_us() / 1000;
+    let last = LINE_AT.load(Relaxed);
+    if now < last + 5_000 || LINE_AT.compare_exchange(last, now, Relaxed, Relaxed).is_err() {
+        return;
+    }
+    if last == 0 {
+        return;
+    }
+    let seconds = (now - last) as f64 / 1e3;
+    let k: Vec<f64> = KINDS.iter().map(|k| k.swap(0, Relaxed) as f64 / seconds).collect();
+    let w: Vec<f64> = WAITS.iter().map(|w| w.swap(0, Relaxed) as f64).collect();
+    tracing::info!(
+        "console CPU instructions, exceptions a second: clzero alone {:.0}, its 12-byte loop {:.0}, its 15-byte loop taken whole {:.0} ({:.0} lines a second, each an exception \
+         before; VICTORY_CLZERO_LOOP15=0: again), lines zeroed through a fault {:.1}, monitorx {:.0}, mwaitx {:.0}, others {:.0} | mwaitx waits ended a second: {:.0}, {:.1} ms of thread time a second; of 1 ms and \
+         more {:.1} ({:.1} ms), of 5 ms and more {:.1} ({:.1} ms), of 20 ms and more {:.1} ({:.1} ms)",
+        k[K_CLZERO],
+        k[K_LOOP12],
+        k[K_LOOP15],
+        k[K_LOOP15_LINES],
+        k[K_THROUGH_FAULT],
+        k[K_MONITORX],
+        k[K_MWAITX],
+        k[K_OTHER],
+        w[0] / seconds,
+        w[1] / seconds / 1e3,
+        w[2] / seconds,
+        w[3] / seconds / 1e3,
+        w[4] / seconds,
+        w[5] / seconds / 1e3,
+        w[6] / seconds,
+        w[7] / seconds / 1e3,
+    );
+}
+
 fn readable(va: usize, bytes: usize) -> bool {
     use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_GUARD, PAGE_NOACCESS, VirtualQuery};
     // SAFETY: plain data filled in by the query.
@@ -95,6 +227,125 @@ fn writable_to(va: usize, end: usize) -> Option<usize> {
         });
     }
     Some(to.min(end))
+}
+
+/// Zeroes the 64-byte line at `line` with ordinary stores, for a line [`writable`] refused that
+/// is committed or reserved all the same: write-protected on purpose, as the write-watch guards
+/// over the host copies of view memory make it (`watch.rs`), whose vectored handler is first in
+/// the chain and opens a guarded block for the title's own stores. The console's `clzero`
+/// faults into such a handler as any store does; here it is an illegal instruction the handler
+/// never sees, so refusing the line left that exception unhandled and ended the run. These
+/// stores fault inside this handler instead, the guard opens the block, and the stores
+/// complete (a fault nothing resolves ends the run, as the title's own store would). False,
+/// with nothing written, for free memory: the exception stays the title's.
+///
+/// # Safety
+/// The title owns the line, as it owns the line of the instruction being emulated.
+unsafe fn zero_through_fault(line: usize) -> bool {
+    use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEM_RESERVE, MEMORY_BASIC_INFORMATION, VirtualQuery};
+    // SAFETY: plain data filled in by the query.
+    let mut m: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: a valid out pointer of the right size.
+    let found = unsafe { VirtualQuery(line as *const _, &mut m, size_of_val(&m)) } != 0;
+    ASKED.fetch_add(1, Relaxed);
+    if !found || (m.State != MEM_COMMIT && m.State != MEM_RESERVE) {
+        return false;
+    }
+    let words = line as *mut u64;
+    for i in 0..8 {
+        // SAFETY: see the function's contract; a fault here is resolved by the runtime's
+        // handlers or ends the run, as the title's own store would.
+        unsafe { words.add(i).write_volatile(0) };
+    }
+    KINDS[K_THROUGH_FAULT].fetch_add(1, Relaxed);
+    true
+}
+
+/// The register `r` of `ctx` (CONTEXT order: rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8..r15).
+fn register(ctx: &mut CONTEXT, r: u8) -> &mut u64 {
+    match r & 15 {
+        0 => &mut ctx.Rax,
+        1 => &mut ctx.Rcx,
+        2 => &mut ctx.Rdx,
+        3 => &mut ctx.Rbx,
+        4 => &mut ctx.Rsp,
+        5 => &mut ctx.Rbp,
+        6 => &mut ctx.Rsi,
+        7 => &mut ctx.Rdi,
+        8 => &mut ctx.R8,
+        9 => &mut ctx.R9,
+        10 => &mut ctx.R10,
+        11 => &mut ctx.R11,
+        12 => &mut ctx.R12,
+        13 => &mut ctx.R13,
+        14 => &mut ctx.R14,
+        _ => &mut ctx.R15,
+    }
+}
+
+/// Where the lines of the loop `mov rax, ptr; add ptr, 0x40; clzero; cmp ptr, end; jb` end,
+/// from the state the loop has at its `clzero`: the line at `rax` is zeroed now, and one
+/// more at `ptr` for every pass the `cmp` sends back. None if this is not the plain case
+/// the loop makes (the line at `rax` on a 64-byte boundary, `ptr` the next line, under
+/// 2 GiB in all): then every line is taken alone, as the instruction itself does it.
+fn loop15_end(rax: usize, ptr: usize, end: usize) -> Option<usize> {
+    if rax & 63 != 0 || ptr != rax.wrapping_add(64) || ptr < rax {
+        return None;
+    }
+    let more = if ptr < end { (end - ptr).div_ceil(64) } else { 0 };
+    let last = ptr.checked_add(more.checked_mul(64)?)?;
+    (last - rax < 2 << 30).then_some(last)
+}
+
+/// The `clzero` at `rip` in the loop `mov rax, ptr; add ptr, 0x40; clzero; cmp ptr, end; jb`,
+/// with all the lines the loop would still zero: `Some(true)` when they are zeroed and the
+/// registers stand as the loop leaves them at its last `clzero` (the caller steps over the
+/// instruction; the title's own `cmp` and `jb` then leave the loop), `Some(false)` when the
+/// first line is not writable (the real instruction faults there too), and when only a
+/// first part was writable the registers stand at the line after it, where the instruction
+/// runs again. None if it is not that loop: the lone instruction is emulated.
+///
+/// # Safety
+/// `rip` is the faulting instruction of `ctx`, whose bytes were read.
+unsafe fn clzero_loop15(ctx: &mut CONTEXT, rip: usize, ptr_reg: u8, end_reg: u8) -> Option<bool> {
+    // The seven bytes in front of it: in the same page as the instruction, which ran.
+    if rip & 0xFFF < 7 && !readable(rip - 7, 7) {
+        return None;
+    }
+    // SAFETY: readable, as checked or as the instruction's own page.
+    let before = unsafe { std::slice::from_raw_parts((rip - 7) as *const u8, 7) };
+    if !decode::loop15_head(before, ptr_reg) || end_reg == 0 || end_reg == ptr_reg {
+        return None;
+    }
+    let rax = ctx.Rax as usize;
+    let ptr = *register(ctx, ptr_reg) as usize;
+    let end = *register(ctx, end_reg) as usize;
+    let last = loop15_end(rax, ptr, end)?;
+    // Region by region, as the 12-byte loop: a block may lie across several views.
+    let mut at = rax;
+    while at < last {
+        let Some(to) = writable_to(at, last) else { break };
+        // A region ends on a page boundary, so `to` is on a line boundary as `at` is.
+        // SAFETY: committed and writable from `at` to `to`.
+        unsafe { std::ptr::write_bytes(at as *mut u8, 0, to - at) };
+        at = to;
+    }
+    if at == rax {
+        return Some(false);
+    }
+    ZEROED.fetch_add((at - rax) as u64, Relaxed);
+    KINDS[K_LOOP15_LINES].fetch_add(((at - rax) / 64) as u64, Relaxed);
+    if at < last {
+        // What follows is not writable: the loop stands at that line's `clzero` now, where
+        // the real one faults too. The instruction runs again (the caller must not step).
+        ctx.Rax = at as u64;
+        *register(ctx, ptr_reg) = (at + 64) as u64;
+        ctx.Rip = (rip as u64).wrapping_sub(3);
+        return Some(true);
+    }
+    ctx.Rax = (last - 64) as u64;
+    *register(ctx, ptr_reg) = last as u64;
+    Some(true)
 }
 
 /// An illegal instruction at `ctx.Rip`: a console-only one is emulated and stepped over
@@ -149,19 +400,43 @@ pub(crate) unsafe fn emulate(ctx: &mut CONTEXT) -> i32 {
                 }
             }
         }
-        ConsoleOnly::Monitorx => {}
-        ConsoleOnly::Mwaitx => std::hint::spin_loop(),
-        ConsoleOnly::Clzero => {
+        ConsoleOnly::Monitorx => {
+            KINDS[K_MONITORX].fetch_add(1, Relaxed);
+            MONITOR.with(|m| m.set((ctx.Rax as usize, ctx.Rsi)));
+        }
+        ConsoleOnly::Mwaitx => {
+            KINDS[K_MWAITX].fetch_add(1, Relaxed);
+            wait_step();
+            std::hint::spin_loop()
+        }
+        ConsoleOnly::Clzero | ConsoleOnly::ClzeroStep { .. } => {
+            // The loop `mov rax, ptr; add ptr, 0x40; clzero; cmp ptr, end; jb` (the title's
+            // +0x4e8ab4c and three more like it zero 896 to 7,040 bytes each, a line an
+            // exception) is taken whole from the line it stands at.
+            // A first line that is not writable is the lone instruction's below.
+            if let ConsoleOnly::ClzeroStep { ptr_reg, end_reg } = what
+                && loop15()
+                && let Some(true) = unsafe { clzero_loop15(ctx, rip, ptr_reg, end_reg) }
+            {
+                ctx.Rip += len as u64;
+                EMULATED.fetch_add(1, Relaxed);
+                KINDS[K_LOOP15].fetch_add(1, Relaxed);
+                line();
+                return CONTINUE_EXECUTION;
+            }
+            KINDS[K_CLZERO].fetch_add(1, Relaxed);
             // with an address-size prefix (0x67) the line is at EAX, zero-extended
             let a32 = code[..len - 3].contains(&0x67);
             let line = (if a32 { ctx.Rax & 0xFFFF_FFFF } else { ctx.Rax } as usize) & !63;
-            if !writable(line, 64) {
-                return 0; // the real instruction faults there too
+            if writable(line, 64) {
+                // SAFETY: the 64-byte line is committed and writable.
+                unsafe { std::ptr::write_bytes(line as *mut u8, 0, 64) };
+            } else if !unsafe { zero_through_fault(line) } {
+                return 0; // free memory: the real instruction faults there too
             }
-            // SAFETY: the 64-byte line is committed and writable.
-            unsafe { std::ptr::write_bytes(line as *mut u8, 0, 64) };
         }
         ConsoleOnly::ClzeroLoop { end_reg } => {
+            KINDS[K_LOOP12].fetch_add(1, Relaxed);
             // the whole `clzero; add rax,40h; cmp rax,end; jb` loop at once
             let regs: [u64; 16] = [
                 ctx.Rax, ctx.Rcx, ctx.Rdx, ctx.Rbx, ctx.Rsp, ctx.Rbp, ctx.Rsi, ctx.Rdi, ctx.R8, ctx.R9, ctx.R10, ctx.R11, ctx.R12, ctx.R13, ctx.R14, ctx.R15,
@@ -180,7 +455,16 @@ pub(crate) unsafe fn emulate(ctx: &mut CONTEXT) -> i32 {
                     at = to;
                 }
                 if at == start {
-                    return 0;
+                    // Its first line is not writable: that line through a fault, then the
+                    // loop goes on after it.
+                    // SAFETY: the line the instruction zeroes.
+                    if !unsafe { zero_through_fault(start & !63) } {
+                        return 0;
+                    }
+                    at = (start & !63) + 64;
+                    if at >= end {
+                        at = end;
+                    }
                 }
                 ZEROED.fetch_add((at - start) as u64, Relaxed);
                 if at < end {
@@ -234,6 +518,13 @@ pub(crate) unsafe fn emulate(ctx: &mut CONTEXT) -> i32 {
             d.High = 0;
         }
     }
+    if !matches!(
+        what,
+        ConsoleOnly::Monitorx | ConsoleOnly::Mwaitx | ConsoleOnly::Clzero | ConsoleOnly::ClzeroStep { .. } | ConsoleOnly::ClzeroLoop { .. }
+    ) {
+        KINDS[K_OTHER].fetch_add(1, Relaxed);
+    }
+    line();
     ctx.Rip += len as u64;
     // How often this runs at all (each one is an exception: a trip into Windows and back).
     let emulated = EMULATED.fetch_add(1, Relaxed) + 1;
@@ -246,4 +537,198 @@ pub(crate) unsafe fn emulate(ctx: &mut CONTEXT) -> i32 {
         );
     }
     CONTINUE_EXECUTION
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What the title's loop leaves, run line by line as the processor would: the lines it
+    /// zeroed and the registers (rax, ptr) at the end, from the state at its first `clzero`.
+    fn by_hand(mut rax: usize, mut ptr: usize, end: usize) -> (Vec<usize>, usize, usize) {
+        let mut lines = vec![rax & !63];
+        while ptr < end {
+            rax = ptr;
+            ptr += 0x40;
+            lines.push(rax & !63);
+        }
+        (lines, rax, ptr)
+    }
+
+    #[test]
+    fn the_15_byte_loop_ends_where_the_processor_would_end_it() {
+        for (rax, len) in [(0x1000usize, 7040usize), (0x1000, 3264), (0x1000, 3776), (0x1000, 896), (0x4000, 64), (0x4000, 65), (0x4000, 100), (0x4000, 1), (0x4000, 0), (0x8000, 128)] {
+            let (ptr, end) = (rax + 64, rax + len);
+            let (lines, last_rax, last_ptr) = by_hand(rax, ptr, end);
+            let last = loop15_end(rax, ptr, end).expect("the plain case");
+            assert_eq!(last, last_ptr, "rax {rax:#x} len {len}");
+            assert_eq!(last - 64, last_rax, "rax {rax:#x} len {len}");
+            assert_eq!((last - rax) / 64, lines.len(), "rax {rax:#x} len {len}");
+            assert_eq!(*lines.last().unwrap(), last - 64);
+        }
+        // an end before the pointer: the line at rax alone
+        assert_eq!(loop15_end(0x1000, 0x1040, 0x800), Some(0x1040));
+        // not the plain case: a line not on a boundary, a pointer that is not the next line
+        assert_eq!(loop15_end(0x1008, 0x1048, 0x2000), None);
+        assert_eq!(loop15_end(0x1000, 0x1080, 0x2000), None);
+        assert_eq!(loop15_end(0x1000, 0x1040, 0x1000 + (3 << 30)), None, "over 2 GiB");
+    }
+
+    /// The loop as the title has it at +0x4e8ab4c, for the given registers.
+    fn code(ptr_reg: u8, end_reg: u8) -> Vec<u8> {
+        let (ph, pl, eh, el) = (ptr_reg >> 3, ptr_reg & 7, end_reg >> 3, end_reg & 7);
+        vec![
+            0x48 | ph << 2, 0x89, 0xC0 | pl << 3, // mov rax, ptr
+            0x48 | ph, 0x83, 0xC0 | pl, 0x40, // add ptr, 0x40
+            0x0F, 0x01, 0xFC, // clzero
+            0x48 | eh << 2 | ph, 0x39, 0xC0 | el << 3 | pl, // cmp ptr, end
+            0x72, 0xF1, // jb -15
+            0x90,
+        ]
+    }
+
+    #[test]
+    fn the_15_byte_loop_is_zeroed_whole_and_leaves_the_loop_s_registers() {
+        for (ptr_reg, end_reg, len) in [(10u8, 11u8, 7040usize), (9, 10, 3264), (8, 9, 3776), (2, 8, 896), (10, 11, 64), (10, 11, 100)] {
+            let code = code(ptr_reg, end_reg);
+            // a block of 0xAA with room on both sides, its start on a line boundary
+            let mut block = vec![0xAAu8; 16384];
+            let base = (block.as_mut_ptr() as usize + 4096 + 63) & !63;
+            // SAFETY: plain data.
+            let mut ctx: CONTEXT = unsafe { std::mem::zeroed() };
+            ctx.Rip = code.as_ptr() as u64 + 7;
+            ctx.Rax = base as u64;
+            *register(&mut ctx, ptr_reg) = base as u64 + 64;
+            *register(&mut ctx, end_reg) = (base + len) as u64;
+            // SAFETY: the context points at the code above.
+            assert_eq!(unsafe { emulate(&mut ctx) }, CONTINUE_EXECUTION);
+            let (lines, last_rax, last_ptr) = by_hand(base, base + 64, base + len);
+            assert_eq!(ctx.Rip, code.as_ptr() as u64 + 10, "at the loop's own cmp");
+            assert_eq!(ctx.Rax as usize, last_rax);
+            assert_eq!(*register(&mut ctx, ptr_reg) as usize, last_ptr);
+            assert_eq!(*register(&mut ctx, end_reg) as usize, base + len, "the end is left alone");
+            let zeroed = lines.len() * 64;
+            let at = base - block.as_ptr() as usize;
+            assert!(block[at..at + zeroed].iter().all(|&b| b == 0), "{zeroed} bytes zeroed");
+            assert!(block[..at].iter().all(|&b| b == 0xAA), "nothing before the block");
+            assert!(block[at + zeroed..].iter().all(|&b| b == 0xAA), "nothing after its last line");
+        }
+    }
+
+    #[test]
+    fn a_clzero_that_only_looks_like_the_loop_is_one_line() {
+        // the same bytes behind it, another head in front (add ptr, 0x80): one line, one step
+        let mut code = code(10, 11);
+        code[6] = 0x80;
+        let mut block = vec![0xAAu8; 8192];
+        let base = (block.as_mut_ptr() as usize + 2048 + 63) & !63;
+        // SAFETY: plain data.
+        let mut ctx: CONTEXT = unsafe { std::mem::zeroed() };
+        ctx.Rip = code.as_ptr() as u64 + 7;
+        ctx.Rax = base as u64;
+        ctx.R10 = base as u64 + 64;
+        ctx.R11 = base as u64 + 640;
+        // SAFETY: the context points at the code above.
+        assert_eq!(unsafe { emulate(&mut ctx) }, CONTINUE_EXECUTION);
+        assert_eq!(ctx.Rip, code.as_ptr() as u64 + 10);
+        assert_eq!((ctx.Rax, ctx.R10), (base as u64, base as u64 + 64), "registers untouched");
+        let at = base - block.as_ptr() as usize;
+        assert!(block[at..at + 64].iter().all(|&b| b == 0));
+        assert!(block[at + 64..].iter().all(|&b| b == 0xAA), "one line only");
+    }
+
+    /// Memory kept from the title's stores until one faults, read-only as the write-watch guards
+    /// make it, or reserved and not committed, with a stand-in for such a handler at the front of
+    /// the chain: it opens a page of this reservation on a write.
+    /// `clzero` on such a line, alone or as the 12-byte loop, zeroes it through that fault;
+    /// free memory is still refused.
+    #[test]
+    fn clzero_on_guarded_or_uncommitted_lines_faults_into_the_runtime_s_handlers() {
+        use std::sync::atomic::AtomicUsize;
+        use windows_sys::Win32::Foundation::EXCEPTION_ACCESS_VIOLATION;
+        use windows_sys::Win32::System::Diagnostics::Debug::{
+            AddVectoredExceptionHandler, EXCEPTION_POINTERS, RemoveVectoredExceptionHandler,
+        };
+        use windows_sys::Win32::System::Memory::{
+            MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, VirtualAlloc, VirtualFree,
+            VirtualProtect,
+        };
+        const PAGES: usize = 3;
+        static BASE: AtomicUsize = AtomicUsize::new(0);
+        static OPENED: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "system" fn open(info: *mut EXCEPTION_POINTERS) -> i32 {
+            // SAFETY: the system passes the exception being dispatched.
+            let r = unsafe { &*(*info).ExceptionRecord };
+            let base = BASE.load(Relaxed);
+            if r.ExceptionCode != EXCEPTION_ACCESS_VIOLATION
+                || r.NumberParameters < 2
+                || r.ExceptionInformation[0] != 1
+                || !(base..base + PAGES * 0x1000).contains(&r.ExceptionInformation[1])
+            {
+                return 0; // EXCEPTION_CONTINUE_SEARCH
+            }
+            let page = r.ExceptionInformation[1] & !0xfff;
+            let mut old = 0;
+            // SAFETY: a page of the test's own reservation.
+            unsafe {
+                assert!(!VirtualAlloc(page as _, 0x1000, MEM_COMMIT, PAGE_READWRITE).is_null());
+                VirtualProtect(page as _, 0x1000, PAGE_READWRITE, &mut old);
+            }
+            OPENED.fetch_add(1, Relaxed);
+            -1 // EXCEPTION_CONTINUE_EXECUTION
+        }
+        // Page 0 committed, filled and made read-only; pages 1 and 2 only reserved.
+        // SAFETY: the test's own reservation, released at the end with the handler removed.
+        let (base, handler) = unsafe {
+            let base = VirtualAlloc(std::ptr::null(), PAGES * 0x1000, MEM_RESERVE, PAGE_NOACCESS) as usize;
+            assert_ne!(base, 0);
+            assert!(!VirtualAlloc(base as _, 0x1000, MEM_COMMIT, PAGE_READWRITE).is_null());
+            std::ptr::write_bytes(base as *mut u8, 0xAA, 0x1000);
+            let mut old = 0;
+            VirtualProtect(base as _, 0x1000, PAGE_READONLY, &mut old);
+            BASE.store(base, Relaxed);
+            (base, AddVectoredExceptionHandler(1, Some(open)))
+        };
+        assert!(!handler.is_null());
+        let run = |code: &[u8], rax: usize, r10: usize| {
+            // SAFETY: plain data.
+            let mut ctx: CONTEXT = unsafe { std::mem::zeroed() };
+            ctx.Rip = code.as_ptr() as u64;
+            ctx.Rax = rax as u64;
+            ctx.R10 = r10 as u64;
+            // SAFETY: the context points at `code`; the lines are the test's.
+            let r = unsafe { emulate(&mut ctx) };
+            (r, ctx.Rip - code.as_ptr() as u64, ctx.Rax as usize)
+        };
+        let page = |p: usize| {
+            // SAFETY: opened (committed read-write) by the handler before this reads it.
+            unsafe { std::slice::from_raw_parts((base + p * 0x1000) as *const u8, 0x1000) }
+        };
+        let lone = [0x0F, 0x01, 0xFC, 0x90];
+        // A guarded line: zeroed through the fault, the rest of the page left as it was.
+        assert_eq!(run(&lone, base + 0x45, 0), (CONTINUE_EXECUTION, 3, base + 0x45));
+        assert_eq!(OPENED.load(Relaxed), 1);
+        assert!(page(0)[0x40..0x80].iter().all(|&b| b == 0));
+        assert!(page(0)[..0x40].iter().chain(&page(0)[0x80..]).all(|&b| b == 0xAA));
+        // A line never committed: the same.
+        assert_eq!(run(&lone, base + 0x1080, 0).0, CONTINUE_EXECUTION);
+        assert_eq!(OPENED.load(Relaxed), 2);
+        assert!(page(1)[0x80..0xC0].iter().all(|&b| b == 0));
+        // The 12-byte loop `clzero; add rax, 40h; cmp rax, r10; jb` starting on a line never
+        // committed: its first line through the fault, the instruction then runs again at the
+        // next line, and the rest of the block is zeroed whole.
+        let lp = [0x0F, 0x01, 0xFC, 0x48, 0x83, 0xC0, 0x40, 0x4C, 0x39, 0xD0, 0x72, 0xF4, 0x90];
+        let (start, end) = (base + 0x2000, base + 0x2400);
+        assert_eq!(run(&lp, start, end), (CONTINUE_EXECUTION, 0, start + 64), "the next line, the same instruction");
+        assert_eq!(OPENED.load(Relaxed), 3);
+        assert_eq!(run(&lp, start + 64, end), (CONTINUE_EXECUTION, 12, end), "the rest, then past the loop");
+        assert!(page(2)[..0x400].iter().all(|&b| b == 0));
+        // SAFETY: removes the handler and releases the reservation made above.
+        unsafe {
+            RemoveVectoredExceptionHandler(handler);
+            VirtualFree(base as _, 0, MEM_RELEASE);
+        }
+        // Free memory: refused, the exception stays the title's.
+        assert_eq!(run(&lone, base + 0x40, 0).0, 0);
+    }
 }

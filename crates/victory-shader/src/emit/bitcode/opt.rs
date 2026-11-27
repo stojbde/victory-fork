@@ -52,10 +52,32 @@ pub const LOADS: u32 = 16;
 /// half has a lane where every lane is in EXEC (`lower.rs`,
 /// `v_readfirstlane_b32`).
 pub const FIRST: u32 = 32;
+/// Not a pass over the module either: the lowering reads the dwords of one
+/// console load (`s_buffer_load_dwordx2` to `x16` from an SRV, a
+/// `global_load_dwordx2` to `x4`) by one call for every four of them, not
+/// by a call each (`lower.rs`, `raw_dwords`). NOT the same result on the card in every case: run 277
+/// had the water black with it (lead: a four-dword load whose last dwords
+/// lie past the view's end, which the card may answer with zeros for the
+/// whole call), so it stays off unless asked for.
+pub const WIDE: u32 = 64;
 /// The passes over the module.
 pub const MODULE: u32 = DEAD | FOLD | REUSE | FACTS | LOADS;
 /// Every pass.
-pub const ALL: u32 = MODULE | FIRST;
+pub const ALL: u32 = MODULE | FIRST | WIDE;
+/// The passes that run when nothing says which: every one, [`WIDE`] (with
+/// the dead-dword masks of `narrow_raw_loads` and the view-end guard) and
+/// [`FAST`] too, the latter with `VICTORY_SHADER_FAST_BITS` 24 by default
+/// (no signed zeros, reciprocal: NaN and infinity tests kept; all flags gave
+/// black blotches in runs 354/355); `VICTORY_SHADER_OPT=127` drops FAST.
+pub const DEFAULT: u32 = ALL | FAST;
+/// Not a pass either: the 32-bit float binary operations are written with
+/// LLVM's unsafe-algebra fast-math flag, as an HLSL compiler writes them by
+/// default, so the driver may fuse a multiply and an add and turn a division
+/// by a constant into a multiply. Results may differ in the last bits and
+/// NaN/infinity checks may be folded away. In [`DEFAULT`]; `VICTORY_SHADER_OPT=63` is the passes
+/// without it, 255 every pass with it. Outside [`ALL`], so `127` stays
+/// "every pass" without it.
+pub const FAST: u32 = 128;
 
 /// What the instructions a module writes use, of the features a shader
 /// declares by flag (the validator's "flags must match usage").
@@ -950,6 +972,7 @@ impl Module {
                 mark(&mut live, &mut work, v)
             });
         }
+        self.narrow_raw_loads(&live);
         for (b, blk) in self.blocks.iter_mut().enumerate() {
             if reached[b] {
                 blk.body.retain(|&i| live[i as usize]);
@@ -961,6 +984,73 @@ impl Module {
         }
         self.drop_unused_functions();
         self.drop_unused_tables();
+    }
+
+    /// A live `dx.op.rawBufferLoad` whose result only live `Extract`s read,
+    /// of components 0 to 3, asks for components 0 up to the highest one
+    /// read and no more (its mask, argument 4). The same values reach every
+    /// read; dwords nothing reads are not asked for, so a load near a view's
+    /// end does not reach past it for them. Any other read of the result
+    /// (the status, component 4, or the whole value) leaves the mask alone.
+    fn narrow_raw_loads(&mut self, live: &[bool]) {
+        // Per load: the highest component read, or `None` once something
+        // else reads it.
+        let mut most: HashMap<u32, Option<u32>> = HashMap::new();
+        let loads: Vec<u32> = (0..self.insts.len() as u32)
+            .filter(|&i| {
+                live[i as usize]
+                    && matches!(&self.insts[i as usize].op, Op::Call(f, args)
+                        if args.len() == 6 && self.funcs[*f as usize].name.starts_with("dx.op.rawBufferLoad"))
+            })
+            .collect();
+        if loads.is_empty() {
+            return;
+        }
+        for &i in &loads {
+            most.insert(i, Some(0));
+        }
+        for (i, inst) in self.insts.iter().enumerate() {
+            if !live[i] {
+                continue;
+            }
+            match &inst.op {
+                Op::Extract(V::Inst(src), n) if most.contains_key(src) => {
+                    let entry = most.get_mut(src).unwrap();
+                    *entry = match *entry {
+                        Some(m) if *n <= 3 => Some(m.max(*n)),
+                        _ => None,
+                    };
+                }
+                op => for_each_operand(op, |v| {
+                    if let V::Inst(src) = v
+                        && let Some(entry) = most.get_mut(&src)
+                    {
+                        *entry = None;
+                    }
+                }),
+            }
+        }
+        for i in loads {
+            let Some(Some(m)) = most.get(&i).copied() else {
+                continue;
+            };
+            let want = (1u8 << (m + 1)) - 1;
+            let Op::Call(_, args) = &self.insts[i as usize].op else {
+                continue;
+            };
+            let V::Const(c) = args[4] else { continue };
+            let Const::Int(old) = self.consts[c as usize].1 else {
+                continue;
+            };
+            // Only ever fewer components, never a different set.
+            if (old as u8) & want != want || old as u8 == want {
+                continue;
+            }
+            let mask = self.i8(want);
+            if let Op::Call(_, args) = &mut self.insts[i as usize].op {
+                args[4] = mask;
+            }
+        }
     }
 
     /// See [`Usage`]: over the blocks reached from the entry.
@@ -1180,6 +1270,47 @@ mod tests {
         m.terminate(b, Term::Ret);
         m.optimise(DEAD);
         assert_eq!(body(&m, b), 3, "the load, the add and the store");
+        m.write();
+    }
+
+    /// A raw load of four dwords of which only the first two are read asks
+    /// for two; one whose status (component 4) is read keeps its mask.
+    #[test]
+    fn raw_loads_ask_only_for_the_dwords_read() {
+        let mut m = Module::default();
+        let (i32t, i8t, f32t, void) = (m.int(32), m.int(8), m.float(), m.void());
+        let ret = m.named_struct("dx.types.ResRet.f32", vec![f32t, f32t, f32t, f32t, i32t]);
+        let fty = m.func_ty(ret, vec![i32t, i32t, i32t, i32t, i8t, i32t]);
+        m.ptr(fty);
+        let load = m.function("dx.op.rawBufferLoad.f32", fty, Some(Attr::ReadOnly), false);
+        let sty = m.func_ty(void, vec![f32t]);
+        m.ptr(sty);
+        let store = m.function("dx.op.store", sty, Some(Attr::NoUnwind), false);
+        let main_ty = m.func_ty(void, vec![]);
+        m.ptr(main_ty);
+        m.function("main", main_ty, None, true);
+        let b = m.new_block();
+        let (op, zero, four, all) = (m.i32(139), m.i32(0), m.i32(4), m.i8(15));
+        let narrowed = m.call(b, load, vec![op, zero, zero, zero, all, four]);
+        let kept = m.call(b, load, vec![op, zero, four, zero, all, four]);
+        for (r, n) in [(narrowed, 0), (narrowed, 1), (kept, 0)] {
+            let x = m.extract(b, r, n);
+            m.call(b, store, vec![x]);
+        }
+        let status = m.extract(b, kept, 4);
+        let as_f = m.cast(b, Cast::Bitcast, status, f32t);
+        m.call(b, store, vec![as_f]);
+        m.terminate(b, Term::Ret);
+        m.optimise(DEAD);
+        let mask = |m: &Module, v: V| {
+            let V::Inst(i) = v else { unreachable!() };
+            let Op::Call(_, args) = &m.insts[i as usize].op else { unreachable!() };
+            let V::Const(c) = args[4] else { unreachable!() };
+            let Const::Int(k) = m.consts[c as usize].1 else { unreachable!() };
+            k
+        };
+        assert_eq!(mask(&m, narrowed), 3, "components 0 and 1");
+        assert_eq!(mask(&m, kept), 15, "its status is read");
         m.write();
     }
 

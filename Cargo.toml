@@ -37,7 +37,8 @@ windows = "0.62.2"
 windows-core = "0.62.2"
 blake3 = "1.8.7"
 memchr = "2.8.3"
-miniz_oxide = "0.9.1"
+# SIMD-accelerated pure-Rust zlib/deflate (Zlib license, runtime AVX2/SSE4.2 dispatch).
+zlib-rs = { version = "0.6.8", default-features = false, features = ["std"] }
 walkdir = "2.5.1"
 tempfile = "3.27.0"
 # Opus decoding for the console's audio decoder (BSD-3-Clause, pure Rust).
@@ -49,13 +50,9 @@ unused_must_use = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
-# This fork: two style lints are let through until the newer code is tidied
-# (tuple-heavy signatures and indexed loops in the translator and GPU side).
-type_complexity = "allow"
-needless_range_loop = "allow"
+# This fork: a few style lints are let through until the newer code is tidied.
 chunks_exact_to_as_chunks = "allow"
 sliced_string_as_bytes = "allow"
-collapsible_match = "allow"
 manual_clamp = "allow"
 implicit_saturating_sub = "allow"
 min_max = "allow"

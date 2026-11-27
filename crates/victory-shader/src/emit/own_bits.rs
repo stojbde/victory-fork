@@ -580,8 +580,8 @@ impl Ctx<'_> {
                     if p.blocks[some].preds[..] != [u.0] || !self.dominates(some, h) {
                         return Err((self.at(u), SHAPE));
                     }
-                    for b in 0..n {
-                        pre[b] = self.dominates(some, b) && !self.dominates(h, b);
+                    for (b, slot) in pre.iter_mut().enumerate() {
+                        *slot = self.dominates(some, b) && !self.dominates(h, b);
                     }
                     for b in (0..n).filter(|&b| pre[b]) {
                         let inside = match p.blocks[b].exit {
@@ -713,8 +713,8 @@ impl Ctx<'_> {
                 .entry(b)
                 .or_insert_with(|| st.bools.support(b).iter().any(|a| dep.contains(a)))
         };
-        for b in 0..n {
-            if lp[b] && tests.iter().any(|&(_, tb, _)| self.dominates(tb, b)) {
+        for (b, &in_loop) in lp.iter().enumerate() {
+            if in_loop && tests.iter().any(|&(_, tb, _)| self.dominates(tb, b)) {
                 continue;
             }
             let stale = st.guards[b].iter().flatten().any(|&g| tainted(g))

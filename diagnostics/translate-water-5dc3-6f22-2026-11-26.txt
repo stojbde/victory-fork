@@ -1,0 +1,137 @@
+
+
+===== 5dc3b25986622949, default forms (wave-wide not allowed) =====
+validator    C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\dxil.dll
+WAVE64-LDS region with reads and writes: 0x230 ds_write2_b32 [v19 off 0/1 made by 0x228 v_mov_b32]; 0x408 ds_min_u32 [v16 off 4/0 made by 0x3ac v_mov_b32]; 0x440 ds_max_u32 [v16 off 0/0 made by 0x3ac v_mov_b32]; 0x4c4 ds_read2_b32 [v22 off 0/1 made by 0x4ac v_mov_b32]
+WAVE64-LDS region with reads and writes: 0x230 ds_write2_b32 [v19 off 0/1 made by 0x228 v_mov_b32]; 0x408 ds_min_u32 [v16 off 4/0 made by 0x3ac v_mov_b32]; 0x440 ds_max_u32 [v16 off 0/0 made by 0x3ac v_mov_b32]; 0x4c4 ds_read2_b32 [v22 off 0/1 made by 0x4ac v_mov_b32]
+WAVE64-WHY group=64 lds=true [LDS in a group over 32, an LDS read and write in one lane-branch region, v_readlane]
+WAVE64-RETRY without early-outs: GFX10 code at 0x7e8: a wave reduction where not every lane runs is not supported
+WAVE64-RETRY without skips: GFX10 code at 0x1ee0: a first-lane read where not every lane runs is not supported
+WAVE64-RETRY local waves: not the allocation idiom at 0x768: a value that depends on the wave on some paths only
+WAVE64-RETRY local waves: not the allocation idiom at 0x768: a value that depends on the wave on some paths only
+WAVE64-RETRY local waves: not the allocation idiom at 0x768: a value that depends on the wave on some paths only
+WAVE64-RETRY without skips, scalars followed: GFX10 code at 0x1ee0: a first-lane read where not every lane runs is not supported
+WAVE64-RETRY local waves: not the allocation idiom at 0x768: a value that depends on the wave on some paths only
+WAVE64-RETRY local waves (APPROXIMATE), without early-outs: GFX10 code at 0x7e8: a wave reduction where not every lane runs is not supported
+WAVE64-RETRY local waves: not the allocation idiom at 0x768: a value that depends on the wave on some paths only
+WAVE64-RETRY local waves (APPROXIMATE), without skips: GFX10 code at 0x2e94: a wave reduction where not every lane runs is not supported
+WAVE64-RETRY local waves: not the allocation idiom at 0x768: a value that depends on the wave on some paths only
+WAVE64-LDS region with reads and writes: 0x230 ds_write2_b32 [v19 off 0/1 made by 0x228 v_mov_b32]; 0x408 ds_min_u32 [v16 off 4/0 made by 0x3ac v_mov_b32]; 0x440 ds_max_u32 [v16 off 0/0 made by 0x3ac v_mov_b32]; 0x4c4 ds_read2_b32 [v22 off 0/1 made by 0x4ac v_mov_b32]
+WAVE64-LDS region with reads and writes: 0x230 ds_write2_b32 [v19 off 0/1 made by 0x228 v_mov_b32]; 0x408 ds_min_u32 [v16 off 4/0 made by 0x3ac v_mov_b32]; 0x440 ds_max_u32 [v16 off 0/0 made by 0x3ac v_mov_b32]; 0x4c4 ds_read2_b32 [v22 off 0/1 made by 0x4ac v_mov_b32]
+WAVE64-WHY group=64 lds=true [LDS in a group over 32, an LDS read and write in one lane-branch region, v_readlane]
+WAVE64-RETRY local waves (APPROXIMATE): wave Some(64)
+WAVE64-RETRY local waves (APPROXIMATE, any mask), without early-outs: GFX10 code at 0x7e8: a wave reduction where not every lane runs is not supported
+WAVE64-RETRY local waves (APPROXIMATE, any mask), without skips: GFX10 code at 0x2e94: a wave reduction where not every lane runs is not supported
+WAVE64-LDS region with reads and writes: 0x230 ds_write2_b32 [v19 off 0/1 made by 0x228 v_mov_b32]; 0x408 ds_min_u32 [v16 off 4/0 made by 0x3ac v_mov_b32]; 0x440 ds_max_u32 [v16 off 0/0 made by 0x3ac v_mov_b32]; 0x4c4 ds_read2_b32 [v22 off 0/1 made by 0x4ac v_mov_b32]
+WAVE64-LDS region with reads and writes: 0x230 ds_write2_b32 [v19 off 0/1 made by 0x228 v_mov_b32]; 0x408 ds_min_u32 [v16 off 4/0 made by 0x3ac v_mov_b32]; 0x440 ds_max_u32 [v16 off 0/0 made by 0x3ac v_mov_b32]; 0x4c4 ds_read2_b32 [v22 off 0/1 made by 0x4ac v_mov_b32]
+WAVE64-WHY group=64 lds=true [LDS in a group over 32, an LDS read and write in one lane-branch region, v_readlane]
+WAVE64-RETRY local waves (APPROXIMATE, any mask): wave Some(64)
+containers   1 (0 duplicates skipped)
+programs     1 translated of 1 (2325 IR instructions)
+structured   1 of 1 (1858 vector instructions, 39 guarded, 0 on opaque masks; branches 50 per lane, 13 uniform)
+resources    1 of 1 tracked (descriptors 148 loaded, 0 built, 31 constant; 97 scalar accesses; 0 with a computed term)
+  used-resource entries 59: 0 not traced {}; 0 traced parameters not listed
+I/O          0 of 0 vertex and pixel programs raised (0 interpolations, 0 vertex values; exports {}, 0 still f16 pairs)
+DXIL         0 emitted of 0 vertex and pixel programs; 0 validated, 0 pipelines
+             1 emitted of 1 compute programs; 1 validated, 0 pipelines
+             0 emitted of 0 mesh programs; 0 validated, 0 pipelines
+<title folder> <program> #5dc3b25986622949 ~d6a72e5f Cs  validated
+
+===== 5dc3b25986622949, wave-wide form allowed (VICTORY_WAVE_WIDE=1, as VICTORY_WAVE_WIDE_ONLY=5dc3b25986622949 does in a run) =====
+validator    C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\dxil.dll
+WAVE64-LDS region with reads and writes: 0x230 ds_write2_b32 [v19 off 0/1 made by 0x228 v_mov_b32]; 0x408 ds_min_u32 [v16 off 4/0 made by 0x3ac v_mov_b32]; 0x440 ds_max_u32 [v16 off 0/0 made by 0x3ac v_mov_b32]; 0x4c4 ds_read2_b32 [v22 off 0/1 made by 0x4ac v_mov_b32]
+WAVE64-LDS region with reads and writes: 0x230 ds_write2_b32 [v19 off 0/1 made by 0x228 v_mov_b32]; 0x408 ds_min_u32 [v16 off 4/0 made by 0x3ac v_mov_b32]; 0x440 ds_max_u32 [v16 off 0/0 made by 0x3ac v_mov_b32]; 0x4c4 ds_read2_b32 [v22 off 0/1 made by 0x4ac v_mov_b32]
+WAVE64-WHY group=64 lds=true [LDS in a group over 32, an LDS read and write in one lane-branch region, v_readlane]
+WAVE64-RETRY without early-outs: GFX10 code at 0x7e8: a wave reduction where not every lane runs is not supported
+WAVE64-RETRY without skips: GFX10 code at 0x1ee0: a first-lane read where not every lane runs is not supported
+WAVE64-RETRY local waves: not the allocation idiom at 0x768: a value that depends on the wave on some paths only
+WAVE64-RETRY local waves: not the allocation idiom at 0x768: a value that depends on the wave on some paths only
+WAVE64-RETRY local waves: not the allocation idiom at 0x768: a value that depends on the wave on some paths only
+WAVE64-RETRY without skips, scalars followed: GFX10 code at 0x1ee0: a first-lane read where not every lane runs is not supported
+WAVE64-WIDE 4 branches taken wave-wide
+WAVE64-RETRY wave-wide branches: wave Some(32)
+containers   1 (0 duplicates skipped)
+programs     1 translated of 1 (2325 IR instructions)
+structured   1 of 1 (1858 vector instructions, 39 guarded, 0 on opaque masks; branches 50 per lane, 13 uniform)
+resources    1 of 1 tracked (descriptors 148 loaded, 0 built, 31 constant; 97 scalar accesses; 0 with a computed term)
+  used-resource entries 59: 0 not traced {}; 0 traced parameters not listed
+I/O          0 of 0 vertex and pixel programs raised (0 interpolations, 0 vertex values; exports {}, 0 still f16 pairs)
+DXIL         0 emitted of 0 vertex and pixel programs; 0 validated, 0 pipelines
+             1 emitted of 1 compute programs; 1 validated, 0 pipelines
+             0 emitted of 0 mesh programs; 0 validated, 0 pipelines
+<title folder> <program> #5dc3b25986622949 ~d6a72e5f Cs  validated
+
+===== 6f225b641c5b0708, default forms (wave-wide not allowed) =====
+validator    C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\dxil.dll
+WAVE64-LDS region with reads and writes: 0x244 ds_write2_b32 [v19 off 0/1 made by 0x23c v_mov_b32]; 0x41c ds_min_u32 [v16 off 4/0 made by 0x3c0 v_mov_b32]; 0x454 ds_max_u32 [v16 off 0/0 made by 0x3c0 v_mov_b32]; 0x4e4 ds_read2_b32 [v22 off 0/1 made by 0x4d4 v_mov_b32]
+WAVE64-LDS region with reads and writes: 0x244 ds_write2_b32 [v19 off 0/1 made by 0x23c v_mov_b32]; 0x41c ds_min_u32 [v16 off 4/0 made by 0x3c0 v_mov_b32]; 0x454 ds_max_u32 [v16 off 0/0 made by 0x3c0 v_mov_b32]; 0x4e4 ds_read2_b32 [v22 off 0/1 made by 0x4d4 v_mov_b32]
+WAVE64-WHY group=64 lds=true [LDS in a group over 32, an LDS read and write in one lane-branch region, v_readlane]
+WAVE64-OWN-BITS the wave OR at 0x2f94: not a loop over the lanes' own bits at 0x301c: a wave OR used as data
+WAVE64-RETRY without early-outs: GFX10 code at 0x7f8: a wave reduction where not every lane runs is not supported
+WAVE64-OWN-BITS the wave OR at 0x2f94: not a loop over the lanes' own bits at 0x301c: a wave OR used as data
+WAVE64-RETRY without skips: GFX10 code at 0x1fa8: a first-lane read where not every lane runs is not supported
+WAVE64-RETRY local waves: not the allocation idiom at 0x778: a value that depends on the wave on some paths only
+WAVE64-RETRY local waves: not the allocation idiom at 0x778: a value that depends on the wave on some paths only
+WAVE64-RETRY local waves: not the allocation idiom at 0x778: a value that depends on the wave on some paths only
+WAVE64-OWN-BITS the wave OR at 0x2f94: not a loop over the lanes' own bits at 0x2f90: a wave OR over a mask a running lane may be outside
+WAVE64-RETRY without skips, scalars followed: GFX10 code at 0x1fa8: a first-lane read where not every lane runs is not supported
+WAVE64-RETRY local waves: not the allocation idiom at 0x778: a value that depends on the wave on some paths only
+WAVE64-RETRY local waves (APPROXIMATE), without early-outs: GFX10 code at 0x7f8: a wave reduction where not every lane runs is not supported
+WAVE64-RETRY local waves: not the allocation idiom at 0x778: a value that depends on the wave on some paths only
+WAVE64-RETRY local waves (APPROXIMATE), without skips: GFX10 code at 0x4e0c: a wave reduction where not every lane runs is not supported
+WAVE64-RETRY local waves: not the allocation idiom at 0x778: a value that depends on the wave on some paths only
+WAVE64-LDS region with reads and writes: 0x244 ds_write2_b32 [v19 off 0/1 made by 0x23c v_mov_b32]; 0x41c ds_min_u32 [v16 off 4/0 made by 0x3c0 v_mov_b32]; 0x454 ds_max_u32 [v16 off 0/0 made by 0x3c0 v_mov_b32]; 0x4e4 ds_read2_b32 [v22 off 0/1 made by 0x4d4 v_mov_b32]
+WAVE64-LDS region with reads and writes: 0x244 ds_write2_b32 [v19 off 0/1 made by 0x23c v_mov_b32]; 0x41c ds_min_u32 [v16 off 4/0 made by 0x3c0 v_mov_b32]; 0x454 ds_max_u32 [v16 off 0/0 made by 0x3c0 v_mov_b32]; 0x4e4 ds_read2_b32 [v22 off 0/1 made by 0x4d4 v_mov_b32]
+WAVE64-WHY group=64 lds=true [LDS in a group over 32, an LDS read and write in one lane-branch region, v_readlane]
+WAVE64-RETRY local waves (APPROXIMATE): wave Some(64)
+WAVE64-RETRY local waves (APPROXIMATE, any mask), without early-outs: GFX10 code at 0x7f8: a wave reduction where not every lane runs is not supported
+WAVE64-RETRY local waves (APPROXIMATE, any mask), without skips: GFX10 code at 0x4e0c: a wave reduction where not every lane runs is not supported
+WAVE64-LDS region with reads and writes: 0x244 ds_write2_b32 [v19 off 0/1 made by 0x23c v_mov_b32]; 0x41c ds_min_u32 [v16 off 4/0 made by 0x3c0 v_mov_b32]; 0x454 ds_max_u32 [v16 off 0/0 made by 0x3c0 v_mov_b32]; 0x4e4 ds_read2_b32 [v22 off 0/1 made by 0x4d4 v_mov_b32]
+WAVE64-LDS region with reads and writes: 0x244 ds_write2_b32 [v19 off 0/1 made by 0x23c v_mov_b32]; 0x41c ds_min_u32 [v16 off 4/0 made by 0x3c0 v_mov_b32]; 0x454 ds_max_u32 [v16 off 0/0 made by 0x3c0 v_mov_b32]; 0x4e4 ds_read2_b32 [v22 off 0/1 made by 0x4d4 v_mov_b32]
+WAVE64-WHY group=64 lds=true [LDS in a group over 32, an LDS read and write in one lane-branch region, v_readlane]
+WAVE64-RETRY local waves (APPROXIMATE, any mask): wave Some(64)
+containers   1 (0 duplicates skipped)
+programs     1 translated of 1 (3634 IR instructions)
+structured   1 of 1 (2795 vector instructions, 56 guarded, 0 on opaque masks; branches 62 per lane, 34 uniform)
+resources    1 of 1 tracked (descriptors 209 loaded, 0 built, 41 constant; 148 scalar accesses; 10 with a computed term)
+  used-resource entries 68: 0 not traced {}; 0 traced parameters not listed
+I/O          0 of 0 vertex and pixel programs raised (0 interpolations, 0 vertex values; exports {}, 0 still f16 pairs)
+DXIL         0 emitted of 0 vertex and pixel programs; 0 validated, 0 pipelines
+             1 emitted of 1 compute programs; 1 validated, 0 pipelines
+             0 emitted of 0 mesh programs; 0 validated, 0 pipelines
+<title folder> <program> #6f225b641c5b0708 ~848b30db Cs  validated
+
+===== 6f225b641c5b0708, wave-wide form allowed (VICTORY_WAVE_WIDE=1, as VICTORY_WAVE_WIDE_ONLY=6f225b641c5b0708 does in a run) =====
+validator    C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\dxil.dll
+WAVE64-LDS region with reads and writes: 0x244 ds_write2_b32 [v19 off 0/1 made by 0x23c v_mov_b32]; 0x41c ds_min_u32 [v16 off 4/0 made by 0x3c0 v_mov_b32]; 0x454 ds_max_u32 [v16 off 0/0 made by 0x3c0 v_mov_b32]; 0x4e4 ds_read2_b32 [v22 off 0/1 made by 0x4d4 v_mov_b32]
+WAVE64-LDS region with reads and writes: 0x244 ds_write2_b32 [v19 off 0/1 made by 0x23c v_mov_b32]; 0x41c ds_min_u32 [v16 off 4/0 made by 0x3c0 v_mov_b32]; 0x454 ds_max_u32 [v16 off 0/0 made by 0x3c0 v_mov_b32]; 0x4e4 ds_read2_b32 [v22 off 0/1 made by 0x4d4 v_mov_b32]
+WAVE64-WHY group=64 lds=true [LDS in a group over 32, an LDS read and write in one lane-branch region, v_readlane]
+WAVE64-OWN-BITS the wave OR at 0x2f94: not a loop over the lanes' own bits at 0x301c: a wave OR used as data
+WAVE64-RETRY without early-outs: GFX10 code at 0x7f8: a wave reduction where not every lane runs is not supported
+WAVE64-OWN-BITS the wave OR at 0x2f94: not a loop over the lanes' own bits at 0x301c: a wave OR used as data
+WAVE64-RETRY without skips: GFX10 code at 0x1fa8: a first-lane read where not every lane runs is not supported
+WAVE64-RETRY local waves: not the allocation idiom at 0x778: a value that depends on the wave on some paths only
+WAVE64-RETRY local waves: not the allocation idiom at 0x778: a value that depends on the wave on some paths only
+WAVE64-RETRY local waves: not the allocation idiom at 0x778: a value that depends on the wave on some paths only
+WAVE64-OWN-BITS the wave OR at 0x2f94: not a loop over the lanes' own bits at 0x2f90: a wave OR over a mask a running lane may be outside
+WAVE64-RETRY without skips, scalars followed: GFX10 code at 0x1fa8: a first-lane read where not every lane runs is not supported
+WAVE64-OWN-BITS the wave OR at 0x2f94: not a loop over the lanes' own bits at 0x2f90: a wave OR over a mask a running lane may be outside
+WAVE64-OWN-BITS the wave OR at 0x2f94: not a loop over the lanes' own bits at 0x2f90: a wave OR over a mask a running lane may be outside
+WAVE64-OWN-BITS the wave OR at 0x2f94: not a loop over the lanes' own bits at 0x2f90: a wave OR over a mask a running lane may be outside
+WAVE64-OWN-BITS the wave OR at 0x2f94: not a loop over the lanes' own bits at 0x2f90: a wave OR over a mask a running lane may be outside
+WAVE64-OWN-BITS the wave OR at 0x2f94: not a loop over the lanes' own bits at 0x2f90: a wave OR over a mask a running lane may be outside
+WAVE64-OWN-BITS the wave OR at 0x2f94: not a loop over the lanes' own bits at 0x2f90: a wave OR over a mask a running lane may be outside
+WAVE64-OWN-BITS the wave OR at 0x2f94: not a loop over the lanes' own bits at 0x2f90: a wave OR over a mask a running lane may be outside
+WAVE64-OWN-BITS the wave OR at 0x2f94: not a loop over the lanes' own bits at 0x2f90: a wave OR over a mask a running lane may be outside
+WAVE64-WIDE 6 branches taken wave-wide
+WAVE64-RETRY wave-wide branches: wave Some(32)
+containers   1 (0 duplicates skipped)
+programs     1 translated of 1 (3634 IR instructions)
+structured   1 of 1 (2795 vector instructions, 56 guarded, 0 on opaque masks; branches 62 per lane, 34 uniform)
+resources    1 of 1 tracked (descriptors 209 loaded, 0 built, 41 constant; 148 scalar accesses; 10 with a computed term)
+  used-resource entries 68: 0 not traced {}; 0 traced parameters not listed
+I/O          0 of 0 vertex and pixel programs raised (0 interpolations, 0 vertex values; exports {}, 0 still f16 pairs)
+DXIL         0 emitted of 0 vertex and pixel programs; 0 validated, 0 pipelines
+             1 emitted of 1 compute programs; 1 validated, 0 pipelines
+             0 emitted of 0 mesh programs; 0 validated, 0 pipelines
+<title folder> <program> #6f225b641c5b0708 ~848b30db Cs  validated
